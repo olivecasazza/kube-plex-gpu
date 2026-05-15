@@ -30,6 +30,8 @@ func main() {
 	namespace := envOrDie("KUBE_NAMESPACE")
 	pmsImage := envOrDie("PMS_IMAGE")
 	pmsAddr := envOrDie("PMS_INTERNAL_ADDRESS")
+	// Media mount configuration — these must match PMS container mounts
+	// so file paths in transcoder args resolve correctly.
 	dataPVC := envOrDie("DATA_PVC")
 	configPVC := envOrDie("CONFIG_PVC")
 	transcodePVC := envOrDie("TRANSCODE_PVC")
@@ -38,6 +40,10 @@ func main() {
 	dataMount := envOr("DATA_MOUNT", "/data")
 	configMount := envOr("CONFIG_MOUNT", "/config")
 	transcodeMount := envOr("TRANSCODE_MOUNT", "/transcode")
+
+	// Optional sub-path mounts for media (comma-separated mount:subPath pairs)
+	// e.g. "/media/movies:movies,/media/tv:tv"
+	mediaSubPaths := envOr("MEDIA_SUB_PATHS", "")
 
 	// Optional GPU config
 	gpuCount := envOr("GPU_COUNT", "1")
@@ -63,7 +69,7 @@ func main() {
 	ctx := context.Background()
 
 	// Build the transcode pod spec
-	pod := buildPod(pmsImage, namespace, args, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, gpuCount, runtimeClass)
+	pod := buildPod(pmsImage, namespace, args, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, mediaSubPaths, gpuCount, runtimeClass)
 
 	// Create the pod
 	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -89,7 +95,7 @@ func main() {
 	os.Exit(exitCode)
 }
 
-func buildPod(image, namespace string, args []string, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, gpuCount, runtimeClass string) *corev1.Pod {
+func buildPod(image, namespace string, args []string, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, mediaSubPaths, gpuCount, runtimeClass string) *corev1.Pod {
 	// Build the full command: the real transcoder binary path + args
 	command := append([]string{"/usr/lib/plexmediaserver/Plex Transcoder"}, args...)
 
@@ -110,6 +116,30 @@ func buildPod(image, namespace string, args []string, dataPVC, configPVC, transc
 	envVars = append(envVars, corev1.EnvVar{Name: "NVIDIA_DRIVER_CAPABILITIES", Value: "compute,video,utility"})
 
 	cwd, _ := os.Getwd()
+
+	// Base volume mounts
+	volumeMounts := []corev1.VolumeMount{
+		{Name: "data", MountPath: dataMount, ReadOnly: true},
+		{Name: "config", MountPath: configMount, ReadOnly: true},
+		{Name: "transcode", MountPath: transcodeMount},
+	}
+
+	// Add sub-path media mounts (e.g. "/media/movies:movies,/media/tv:tv")
+	// These mount the data PVC at additional paths with subPath so that
+	// file paths in transcoder args (like /media/movies/...) resolve correctly.
+	if mediaSubPaths != "" {
+		for _, pair := range strings.Split(mediaSubPaths, ",") {
+			parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+			if len(parts) == 2 {
+				volumeMounts = append(volumeMounts, corev1.VolumeMount{
+					Name:      "data",
+					MountPath: parts[0],
+					SubPath:   parts[1],
+					ReadOnly:  true,
+				})
+			}
+		}
+	}
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -147,11 +177,7 @@ func buildPod(image, namespace string, args []string, dataPVC, configPVC, transc
 							"nvidia.com/gpu": gpuQty,
 						},
 					},
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "data", MountPath: dataMount, ReadOnly: true},
-						{Name: "config", MountPath: configMount, ReadOnly: true},
-						{Name: "transcode", MountPath: transcodeMount},
-					},
+					VolumeMounts: volumeMounts,
 				},
 			},
 			Volumes: []corev1.Volume{
