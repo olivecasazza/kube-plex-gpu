@@ -33,7 +33,7 @@ func main() {
 	// Media mount configuration — these must match PMS container mounts
 	// so file paths in transcoder args resolve correctly.
 	dataPVC := envOrDie("DATA_PVC")
-	configPVC := envOrDie("CONFIG_PVC")
+	configPVC := envOr("CONFIG_PVC", "")
 	transcodePVC := envOrDie("TRANSCODE_PVC")
 
 	// Media mount paths (must match PMS container mounts)
@@ -128,8 +128,15 @@ func buildPod(image, namespace string, args []string, dataPVC, configPVC, transc
 	}
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "data", MountPath: dataMount, ReadOnly: true},
-		{Name: "config", MountPath: configMount, ReadOnly: true},
 		transcodeVM,
+	}
+
+	// Config is optional — Plex codecs are in the container image already.
+	// Only add config volume if CONFIG_PVC is set (for custom codecs, etc.)
+	if configPVC != "" {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: "config", MountPath: configMount, ReadOnly: true,
+		})
 	}
 
 	// Add sub-path media mounts (e.g. "/media/movies:movies,/media/tv:tv")
@@ -149,6 +156,38 @@ func buildPod(image, namespace string, args []string, dataPVC, configPVC, transc
 		}
 	}
 
+	// Build volumes list
+	volumes := []corev1.Volume{
+		{
+			Name: "data",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: dataPVC,
+					ReadOnly:  true,
+				},
+			},
+		},
+		{
+			Name: "transcode",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: transcodePVC,
+				},
+			},
+		},
+	}
+	if configPVC != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: configPVC,
+					ReadOnly:  true,
+				},
+			},
+		})
+	}
+
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "plex-transcode-gpu-",
@@ -162,7 +201,6 @@ func buildPod(image, namespace string, args []string, dataPVC, configPVC, transc
 		Spec: corev1.PodSpec{
 			RestartPolicy:    corev1.RestartPolicyNever,
 			RuntimeClassName: &runtimeClass,
-			// Tolerate GPU taint so we schedule to hp nodes
 			Tolerations: []corev1.Toleration{
 				{
 					Key:      "nvidia.com/gpu",
@@ -188,34 +226,7 @@ func buildPod(image, namespace string, args []string, dataPVC, configPVC, transc
 					VolumeMounts: volumeMounts,
 				},
 			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "data",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: dataPVC,
-							ReadOnly:  true,
-						},
-					},
-				},
-				{
-					Name: "config",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: configPVC,
-							ReadOnly:  true,
-						},
-					},
-				},
-				{
-					Name: "transcode",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: transcodePVC,
-						},
-					},
-				},
-			},
+			Volumes: volumes,
 		},
 	}
 }
