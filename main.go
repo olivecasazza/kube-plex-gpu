@@ -45,6 +45,10 @@ func main() {
 	// e.g. "/media/movies:movies,/media/tv:tv"
 	mediaSubPaths := envOr("MEDIA_SUB_PATHS", "")
 
+	// Optional subPath for the transcode volume (e.g. "transcode" to use a
+	// subdirectory of the PVC rather than its root)
+	transcodeSubPath := envOr("TRANSCODE_SUB_PATH", "")
+
 	// Optional GPU config
 	gpuCount := envOr("GPU_COUNT", "1")
 	runtimeClass := envOr("RUNTIME_CLASS", "nvidia")
@@ -69,7 +73,7 @@ func main() {
 	ctx := context.Background()
 
 	// Build the transcode pod spec
-	pod := buildPod(pmsImage, namespace, args, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, mediaSubPaths, gpuCount, runtimeClass)
+	pod := buildPod(pmsImage, namespace, args, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, transcodeSubPath, mediaSubPaths, gpuCount, runtimeClass)
 
 	// Create the pod
 	created, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -95,7 +99,7 @@ func main() {
 	os.Exit(exitCode)
 }
 
-func buildPod(image, namespace string, args []string, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, mediaSubPaths, gpuCount, runtimeClass string) *corev1.Pod {
+func buildPod(image, namespace string, args []string, dataPVC, configPVC, transcodePVC, dataMount, configMount, transcodeMount, transcodeSubPath, mediaSubPaths, gpuCount, runtimeClass string) *corev1.Pod {
 	// Build the full command: the real transcoder binary path + args
 	command := append([]string{"/usr/lib/plexmediaserver/Plex Transcoder"}, args...)
 
@@ -118,10 +122,14 @@ func buildPod(image, namespace string, args []string, dataPVC, configPVC, transc
 	cwd, _ := os.Getwd()
 
 	// Base volume mounts
+	transcodeVM := corev1.VolumeMount{Name: "transcode", MountPath: transcodeMount}
+	if transcodeSubPath != "" {
+		transcodeVM.SubPath = transcodeSubPath
+	}
 	volumeMounts := []corev1.VolumeMount{
 		{Name: "data", MountPath: dataMount, ReadOnly: true},
 		{Name: "config", MountPath: configMount, ReadOnly: true},
-		{Name: "transcode", MountPath: transcodeMount},
+		transcodeVM,
 	}
 
 	// Add sub-path media mounts (e.g. "/media/movies:movies,/media/tv:tv")
